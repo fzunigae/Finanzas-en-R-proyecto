@@ -1,0 +1,16 @@
+# Archivos intermedios que Quarto genera al renderizar (se regeneran solos,
+# no hace falta versionarlos -- vimos aparecer .quarto/ y *.tex al renderizar).
+.quarto/
+*.knit.md
+*.utf8.md
+*.tex
+*.typ
+
+# Sesión de R
+.Rhistory
+.RData
+.Rproj.user/
+
+# Archivos de sistema operativo
+.DS_Store
+Thumbs.db

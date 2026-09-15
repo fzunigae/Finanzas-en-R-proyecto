@@ -1,0 +1,202 @@
+---
+title: "Finanzas en R -- Entrega 01"
+subtitle: "Descripción de la solución y planificación del trabajo"
+author: "Felipe Zúñiga"
+date: "2026-09-15" #estuve tentado a ponerle today
+format: typst
+lang: es
+execute:
+  echo: false #para que no salga el codigo
+---
+
+## 1. Descripción de la solución
+
+**Qué soluciona.** El proyecto construye una fila de espera priorizada para la
+revisión de una cartera comercial mayorista evaluada individualmente (categorías
+A4-A6). En lugar de que el analista revise clientes en orden arbitrario o solo
+por tamaño de exposición, el modelo ordena la cartera combinando dos señales:
+qué tan mal se comporta un deudor respecto a sus pares de igual categoría
+normativa (brecha de conducta) y cuánto capital en provisión está en juego si
+ese deudor migra un escalón de riesgo (provisión en riesgo). El modelo **no
+reclasifica** -- ordena la revisión; la decisión sigue siendo del analista.
+
+**A quiénes impacta.** Analistas de riesgo de crédito comercial y sus
+jefaturas, que hoy deben decidir con tiempo limitado a qué deudores mirar
+primero dentro de una cartera que excede su capacidad de revisión exhaustiva.
+
+**Cómo espera solucionar el problema.** Reconstruyendo la trayectoria
+histórica de mora semanal (hoy no se almacena -- el informe semanal se recibe
+y se pierde), estimando mediante regresión la conducta de pago esperada para
+cada categoría, y calculando cuánto se desvía cada deudor de ese comportamiento
+esperado. Esa brecha se cruza con el impacto en provisiones (usando la tabla de
+pérdida esperada del Capítulo B-1 del Compendio de Normas Contables) para
+producir un índice de prioridad único y explicable.
+
+**Periodicidad.** Semanal, en línea con la periodicidad del informe de mora
+que alimenta el modelo.
+
+**Alcance -- qué considera:**
+
+- Cartera evaluada individualmente en tramos A4-A6 (zona de frontera donde el
+  riesgo depende principalmente de comportamiento de pago).
+- Simulación reproducible de datos (por confidencialidad, no se usa
+  información real de clientes).
+- Cálculo de severidad, cronicidad, brecha de conducta y provisión en riesgo.
+- Salida en forma de fila de espera priorizada con justificación por deudor.
+
+**Alcance -- qué no considera:**
+
+- Categorías A1-A3 (el riesgo ahí no depende principalmente de conducta de
+  pago) ni cartera subestándar/incumplimiento B-C (ya bajo seguimiento
+  intensivo).
+- Estimación de probabilidad de migración (requeriría un modelo predictivo,
+  fuera de alcance de este proyecto).
+- Abonos parciales o garantías dentro de la simulación.
+
+## 2. Planificación del trabajo
+
+El proyecto se desarrolla en tres entregas que siguen el ciclo de trabajo de
+un modelo de datos: primero se define el problema de negocio y se planifica
+el desarrollo (Entrega 01); luego se construye el producto mínimo viable,
+portando a R la lógica ya validada en Python -- simulación de datos, limpieza,
+modelo de brecha de conducta y cálculo de prioridad (Entrega 02); finalmente
+se documenta el versionado, despliegue y monitoreo del modelo, cerrando el
+ciclo completo de *collect → clean → train → version → deploy → monitor*
+(Entrega 03).
+
+```{r}
+#| label: cargar-librerias
+#| message: false
+
+library(ggplot2)
+library(knitr)
+```
+
+```{r}
+#| label: tabla-tareas
+#| tbl-colwidths: [8,40,17,35]
+
+tareas <- data.frame(
+  fase = c(
+    rep("Entrega 01", 2),
+    rep("Entrega 02", 5),
+    rep("Entrega 03", 4)
+  ),
+  tarea = c(
+    "Descripción de la solución",
+    "Planificación (descriptor + Gantt)",
+    "Port simulación de datos a R",
+    "Limpieza y transformación",
+    "Modelo: regresión + provisión en riesgo",
+    "Índice de prioridad y salidas",
+    "Revisión y documentación del MVP",
+    "Versionado (renv, tags)",
+    "Despliegue (descripción del enfoque)",
+    "Monitoreo (métricas y plan de revisión)",
+    "Documentación final y cierre de repo"
+  ),
+  responsable = c(
+    "Análisis", "Documentación",
+    "Desarrollo", "Desarrollo", "Análisis", "Desarrollo", "Documentación",
+    "Desarrollo", "Documentación", "Análisis", "Documentación"
+  ),
+  dependencia = c(
+    "—", "Descripción de la solución",
+    "Entrega 01", "Simulación de datos", "Limpieza y transformación",
+    "Modelo", "Salidas generadas",
+    "MVP entregado", "Versionado", "Despliegue descrito", "Monitoreo descrito"
+  ),
+  inicio = c(
+    "12/09", "14/09",
+    "15/09", "18/09", "21/09", "25/09", "28/09",
+    "30/09", "01/10", "03/10", "05/10"
+  ),
+  fin = c(
+    "13/09", "15/09",
+    "18/09", "21/09", "25/09", "28/09", "30/09",
+    "01/10", "03/10", "05/10", "07/10"
+  ),
+  hito = c(
+    NA, "Entrega 01",
+    NA, NA, NA, NA, "Entrega 02",
+    NA, NA, NA, "Entrega 03"
+  )
+)
+
+# Convertimos texto "dd/mm" a fechas reales de 2026.
+tareas$inicio <- as.Date(paste0(tareas$inicio, "/2026"), format = "%d/%m/%Y") #paste0 no deja espacios, a dif. de paste
+tareas$fin    <- as.Date(paste0(tareas$fin,    "/2026"), format = "%d/%m/%Y")
+
+# Guardamos una copia para las tablas ANTES de tocar tipos/formatos, porque
+# para el gráfico necesitamos fechas como Date y para las tablas las queremos
+# como texto corto (dd/mm), y la columna tarea la vamos a convertir a factor
+# más abajo (eso no debe afectar cómo se ve en las tablas).
+tareas_tabla <- data.frame(
+  Fase        = sub("Entrega ", "E", tareas$fase),
+  Tarea       = tareas$tarea,
+  Rol         = tareas$responsable,
+  Dependencia = tareas$dependencia,
+  Inicio      = format(tareas$inicio, "%d/%m"),
+  Fin         = format(tareas$fin, "%d/%m"),
+  Hito        = ifelse(is.na(tareas$hito), "", tareas$hito)
+)
+
+# Mantenemos el orden cronológico definido arriba también en el eje del
+# gráfico (si no, ggplot ordenaría las tareas alfabéticamente).
+tareas$tarea <- factor(tareas$tarea, levels = rev(tareas$tarea))
+
+# Partimos la información en dos tablas angostas en vez de una sola con 7
+# columnas: con tanto texto largo (Tarea, Dependencia) una tabla única
+# comprime demasiado las columnas de fecha y el texto se solapa.
+kable(
+  tareas_tabla[, c("Fase", "Tarea", "Rol", "Dependencia")],
+  row.names = FALSE
+)
+```
+
+```{r}
+#| label: tabla-fechas
+#| tbl-colwidths: [8,42,14,14,22]
+
+kable(
+  tareas_tabla[, c("Fase", "Tarea", "Inicio", "Fin", "Hito")],
+  row.names = FALSE
+)
+```
+
+### Carta Gantt
+
+```{r}
+#| label: grafico-gantt
+#| fig-cap: "Carta Gantt -- Proyecto Finanzas en R"
+#| fig-width: 9
+#| fig-height: 5
+
+hitos <- subset(tareas, !is.na(hito))
+
+ggplot(tareas, aes(x = inicio, xend = fin, y = tarea, yend = tarea,
+                    color = responsable)) +
+  geom_segment(linewidth = 7) +
+  geom_vline(
+    data = hitos, aes(xintercept = fin),
+    linetype = "dashed", color = "grey30"
+  ) +
+  geom_text(
+    data = hitos, aes(x = fin, y = Inf, label = hito),
+    inherit.aes = FALSE, angle = 90, vjust = 1.3, hjust = 1,
+    size = 3, color = "grey30"
+  ) +
+  scale_x_date(date_labels = "%d/%m") +
+  labs(
+    title = "Planificación -- Proyecto Finanzas en R",
+    x = "Fecha (2026)",
+    y = NULL,
+    color = "Responsable/Rol"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+Las líneas verticales marcan los hitos de cada entrega. Las dependencias son
+secuenciales dentro de cada fase -- al ser un proyecto individual no existe
+paralelismo real posible entre tareas.
