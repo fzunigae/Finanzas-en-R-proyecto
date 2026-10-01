@@ -201,10 +201,11 @@
 
 # %%
 
-# %% CELDA 1 - LIBRERÍAS
+#%% CELDA 1 - LIBRERÍAS
 library(ggplot2)
+library(writexl)
 
-# %% CELDA 2 - PARÁMETROS
+#%% CELDA 2 - PARÁMETROS
 # =============================================================================
 # Todos los supuestos del modelo viven acá. Para probar otro escenario basta
 # modificar esta celda y volver a ejecutar el archivo completo.
@@ -212,6 +213,11 @@ library(ggplot2)
 
 # --- Reproducibilidad ---
 set.seed(42)
+
+# --- Salidas ---
+# Ruta relativa a la raíz del proyecto (Proyecto Final R/), que es el
+# directorio de trabajo en el que renv queda activo.
+carpeta_salida <- "Entrega 02"
 
 # --- Horizonte de simulación ---
 semanas <- 52                    # un año de cortes semanales (viernes)
@@ -263,7 +269,7 @@ umbral_severidad <- 30           # días de mora en el último corte
 umbral_cronicidad <- 8           # puntaje ponderado de cierres mensuales
 umbral_residuo <- 1              # desviación respecto de los pares
 
-# %% CELDA 3 - PARTE 1.1: SERIE SEMANAL DE MORA
+#%% CELDA 3 - PARTE 1.1: SERIE SEMANAL DE MORA
 # =============================================================================
 # Simula, para cada deudor, 52 cortes de viernes con días de mora.
 #
@@ -400,7 +406,7 @@ base_clientes <- data.frame(
 # =============================================================================
 # Dos indicadores, no diez. Con 137 deudores un score de muchas variables es
 # imposible de auditar y nadie confía en él. La correlación entre ambos es
-# baja (0,16), de modo que no son redundantes: miden cosas distintas.
+# baja (0,23), de modo que no son redundantes: miden cosas distintas.
 # =============================================================================
 
 # --- Severidad: qué tan profunda es la mora HOY ---
@@ -444,3 +450,192 @@ base_clientes$Provision_migrada <-  base_clientes$Exposicion * base_clientes$PE_
 # Provisión en riesgo: cuántos millones adicionales habría que constituir
 base_clientes$Provision_riesgo <- base_clientes$Provision_migrada -
                                   base_clientes$Provision_actual
+
+#%% CELDA 8 - PARTE 4: ESTADÍSTICA Y REGRESIÓN
+# =============================================================================
+# La regresión explica la CONDUCTA a partir de la CATEGORÍA, y no al revés.
+# Así el valor ajustado es "cuánta mora se espera de un deudor de esta
+# clasificación", y el residuo mide cuánto se aparta de sus propios pares.
+# La comparación contra pares de igual categoría queda incorporada en la
+# regresión misma.
+#
+# El modelo es descriptivo, no predictivo: caracteriza la relación existente
+# en la cartera observada, no anticipa eventos futuros.
+# =============================================================================
+
+# Ambas tablas usan los códigos de deudor como nombres de fila y en el mismo
+# orden; se verifica antes de pegarlas columna a columna.
+stopifnot(identical(rownames(base_clientes), rownames(indicadores)))
+datos <- cbind(base_clientes, indicadores)
+datos$Categoria_num <- unname(c(A4 = 4, A5 = 5, A6 = 6)[datos$Categoria])
+
+# --- 4.1 Estadística descriptiva ---
+vars <- c("Severidad", "Cronicidad", "Exposicion", "Provision_riesgo")
+describir <- function(x) c(n = length(x), media = mean(x), desv = sd(x), quantile(x))
+print(round(sapply(datos[vars], describir), 2))
+print(aggregate(cbind(Severidad, Cronicidad) ~ Categoria, data = datos,
+                FUN = function(x) round(describir(x), 2)))
+
+# --- 4.2 Matriz de correlaciones ---
+# Verifica si los indicadores aportan información independiente.
+# Exposición vs. Provisión en riesgo da 0,99: priorizar por provisión en
+# riesgo es casi priorizar por tamaño. Cronicidad vs. Exposición da 0,09:
+# la conducta casi no tiene relación con el tamaño, y por eso multiplicarlas
+# genera información en vez de reforzar un mismo eje.
+print(round(cor(datos[vars]), 3))
+
+# --- Índice de conducta ---
+# Severidad llega a 102 y cronicidad a 17,7. Sin estandarizar, la primera
+# aplastaría a la segunda solo por tener otra escala.
+# scale() devuelve una matriz; as.numeric() la deja como vector.
+datos$Conducta <- as.numeric(scale(datos$Severidad)) + as.numeric(scale(datos$Cronicidad))
+
+# --- 4.3 Regresión por mínimos cuadrados ordinarios ---
+modelo <- lm(Conducta ~ Categoria_num, data = datos)
+print(summary(modelo))
+
+# --- 4.4 Residuos ---
+# Valor ajustado = conducta esperable para esa categoría.
+# Residuo = cuánto se aparta el deudor de lo esperable para sus pares.
+datos$Conducta_esperada <- fitted(modelo)
+datos$Residuo <- resid(modelo)
+
+#%% CELDA 9 - PARTE 5: ÍNDICE DE PRIORIDAD Y FILA DE ESPERA
+# =============================================================================
+# Prioridad = brecha de conducta (0 a 1) x provisión en riesgo (MM$)
+# =============================================================================
+
+# Un residuo negativo significa que el deudor se comporta MEJOR que sus pares.
+# Eso no es riesgo, así que la brecha solo cuenta hacia arriba.
+datos$Brecha <- pmax(datos$Residuo, 0)
+
+# Al normalizar a escala 0-1 antes de multiplicar, el resultado se mantiene
+# en millones de pesos y se lee como: de la provisión que este deudor tiene
+# en riesgo, qué parte está respaldada por una conducta anómala.
+datos$Brecha_Norm <- datos$Brecha / max(datos$Brecha)
+datos$Prioridad <- datos$Brecha_Norm * datos$Provision_riesgo
+
+# Devuelve el texto que explica por qué un deudor está donde está en la fila.
+# Sin esta columna el modelo es una caja negra y ningún analista le hace
+# caso. Los umbrales son criterio experto, no estimaciones.
+#   fila:    una fila de datos (data.frame de una fila)
+#   retorna: motivos separados por " / ", o "sin alertas" si no gatilla ninguno
+justificar <- function(fila) {
+    motivos <- character()
+    if (fila$Severidad >= umbral_severidad) {
+        motivos <- c(motivos, "mora actual alta")
+    }
+    if (fila$Cronicidad >= umbral_cronicidad) {
+        motivos <- c(motivos, "mora recurrente")
+    }
+    if (fila$Residuo >= umbral_residuo) {
+        motivos <- c(motivos, "conducta peor que sus pares")
+    }
+    if (!fila$EEFF_vigentes) {
+        motivos <- c(motivos, "EEFF desactualizados")
+    }
+    if (length(motivos) == 0) {
+        return("sin alertas")
+    }
+    paste(motivos, collapse = " / ")
+}
+
+# sapply() recorre los números de fila y le pasa a la función cada fila completa
+datos$Justificacion <- sapply(seq_len(nrow(datos)),
+                              function(i) justificar(datos[i, ]))
+
+# Columnas que van al Excel: se define una sola vez y se reutiliza
+columnas_salida <- c(
+    "Categoria", "Sector", "Exposicion", "EEFF_vigentes",
+    "Severidad", "Cronicidad", "Residuo",
+    "Provision_actual", "Provision_riesgo", "Prioridad", "Justificacion"
+)
+
+# --- Control normativo de EEFF ---
+# No es un indicador que suma puntaje: es una regla. Un deudor A4 o A5 con
+# estados financieros desactualizados no puede clasificarse mejor que A6, y
+# eso se verifica sin necesidad de análisis de riesgo.
+control_eeff <- datos[datos$Categoria %in% c("A4", "A5") & !datos$EEFF_vigentes,
+                      columnas_salida]
+
+# --- Fila de espera ---
+fila_espera <- datos[order(datos$Prioridad, decreasing = TRUE), columnas_salida]
+
+#%% CELDA 10 - VISUALIZACIONES
+# ---------- Gráfico 1: trayectoria del deudor prioritario ----------
+# which.max() devuelve la POSICIÓN del valor más alto, no el valor;
+# con esa posición se obtiene el nombre de fila: entrega quién, no cuánto.
+cliente_top <- rownames(datos)[which.max(datos$Prioridad)]
+
+# ggplot trabaja sobre un data.frame: se arma uno con la serie del deudor
+trayectoria <- data.frame(
+    Semana = seq_len(semanas),
+    Mora = base_mora[[cliente_top]]
+)
+
+# El gráfico se construye por capas que se suman con +
+# La línea del umbral hace visible el límite normativo: se ve de inmediato
+# qué tan cerca está el deudor de cruzar a cartera en incumplimiento.
+grafico1 <- ggplot(trayectoria, aes(x = Semana, y = Mora)) +
+    geom_area(fill = "steelblue", alpha = 0.15) +
+    geom_line(color = "steelblue") +
+    geom_point(color = "steelblue", size = 1.5) +
+    geom_hline(yintercept = dias_incumplimiento, color = "red",
+               linetype = "dashed", linewidth = 0.6) +
+    annotate("text", x = 1, y = dias_incumplimiento,
+             label = paste0("Umbral de incumplimiento (",
+                            dias_incumplimiento, " días)"),
+             color = "red", hjust = 0, vjust = -0.5, size = 3.5) +
+    labs(title = paste0("Trayectoria de mora del deudor prioritario: ",
+                        cliente_top, " (", datos[cliente_top, "Categoria"], ")"),
+         x = "Semana del año", y = "Días de mora") +
+    theme_bw()
+
+print(grafico1)
+ggsave(file.path(carpeta_salida, "grafico1_trayectoria.png"), grafico1, width = 11, height = 4.5, dpi = 150)
+
+# ---------- Gráfico 2: brecha de conducta vs. provisión en riesgo ----------
+# Las dos líneas punteadas parten el plano en cuatro cuadrantes:
+#   arriba a la derecha -> mucha plata y conducta anómala: revisar primero
+#   arriba a la izquierda -> mucha plata sin señal: los que el criterio de
+#                            tamaño pondría primero y este modelo descarta
+colores <- c(A4 = "#2E7D32", A5 = "#EF6C00", A6 = "#C62828")
+
+# Se etiquetan los cuatro primeros de la fila de espera
+top4 <- datos[rownames(fila_espera)[1:4], ]
+
+# Al mapear fill a Categoria, ggplot colorea por grupo y arma la leyenda solo.
+# shape = 21 es un círculo con relleno y borde, lo que permite el borde blanco.
+grafico2 <- ggplot(datos, aes(x = Brecha_Norm, y = Provision_riesgo,
+                              fill = Categoria)) +
+    geom_point(shape = 21, color = "white", size = 3, alpha = 0.75) +
+    geom_text(data = top4, aes(label = rownames(top4)),
+              hjust = 0, nudge_x = 0.015, nudge_y = 8, size = 3) +
+    geom_vline(xintercept = 0.5, color = "gray", linetype = "dotted") +
+    geom_hline(yintercept = median(datos$Provision_riesgo), color = "gray",
+               linetype = "dotted") +
+    scale_fill_manual(values = colores) +
+    labs(title = "Brecha de conducta vs. provisión en riesgo",
+         x = "Brecha de conducta normalizada (0 = igual o mejor que sus pares)",
+         y = "Provisión en riesgo (MM$)", fill = "Categoría") +
+    theme_bw()
+
+print(grafico2)
+ggsave(file.path(carpeta_salida, "grafico2_dispersion.png"), grafico2, width = 9, height = 6, dpi = 150)
+
+#%% CELDA 11 - EXPORTACIÓN
+
+# write_xlsx() no guarda los nombres de fila, así que el código de deudor
+# se agrega como primera columna para que no se pierda en el Excel.
+# Cada elemento de la lista se escribe como una hoja; el nombre del
+# elemento es el nombre de la hoja.
+hojas <- list(
+    "Fila de espera" = cbind(Deudor = rownames(fila_espera), fila_espera),
+    "Control EEFF"   = cbind(Deudor = rownames(control_eeff), control_eeff)
+)
+write_xlsx(hojas, file.path(carpeta_salida, "resultado_focalizacion.xlsx"))
+
+cat("\nArchivos generados:\n")
+cat("  resultado_focalizacion.xlsx\n")
+cat("  grafico1_trayectoria.png\n")
+cat("  grafico2_dispersion.png\n")
