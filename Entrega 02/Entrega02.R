@@ -124,18 +124,20 @@
 # -------------------------------------------------------------------------------
 # 6. PRINCIPALES RESULTADOS
 # -------------------------------------------------------------------------------
-#   - Cartera simulada: 137 deudores, 107.671 MM$ de exposición
-#   - Provisión constituida: 7.356 MM$ | Provisión en riesgo: 4.982 MM$
-#   - 12 deudores A4/A5 con EEFF desactualizados (7.666 MM$ de exposición):
+#   - Cartera simulada: 137 deudores, 138.531 MM$ de exposición
+#   - Provisión constituida: 9.722 MM$ | Provisión en riesgo: 6.489 MM$
+#   - 8 deudores A4/A5 con EEFF desactualizados (5.040 MM$ de exposición):
 #     incumplen el techo normativo A6 por control administrativo, sin necesidad
 #     de análisis de riesgo
-#   - Regresión conducta ~ categoría: R2 = 0,014 (p = 0,164). La categoría vigente
-#     explica apenas el 1,4% de la variación en comportamiento de pago; el 98,6%
-#     restante ocurre DENTRO de las categorías. Este resultado no es una debilidad
-#     del modelo: es su justificación. Si la clasificación explicara la conducta,
-#     bastaría con revisar en orden de categoría.
+#   - Regresión conducta ~ categoría: R2 = 0,102 (p < 0,001). La relación es
+#     significativa y va en el sentido esperado (peor categoría, peor conducta),
+#     pero la categoría vigente explica apenas el 10,2% de la variación en
+#     comportamiento de pago; el 89,8% restante ocurre DENTRO de las categorías.
+#     Este resultado no es una debilidad del modelo: es su justificación. Si la
+#     clasificación explicara la conducta, bastaría con revisar en orden de
+#     categoría.
 #   - Comparación contra el criterio actual: de los 5 deudores con mayor provisión
-#     en riesgo (criterio de tamaño), 2 presentan brecha de conducta nula. Bajo el
+#     en riesgo (criterio de tamaño), 3 presentan brecha de conducta nula. Bajo el
 #     criterio vigente serían de las primeras carpetas abiertas sin que exista
 #     señal que lo justifique.
 
@@ -163,13 +165,14 @@
 #     de forma independiente, para evitar inconsistencias entre ambas fuentes.
 
 #   Sobre el modelo
-#   - Con 137 observaciones la regresión no alcanza significancia estadística
-#     convencional. Es una restricción del universo, no del método: la banca
-#     mayorista tiene pocos deudores por definición. Como verificación, se replicó
-#     el ejercicio ampliando la cartera a las seis categorías de cartera normal
-#     (calibrando A1: 0,520; A2: 0,500; A3: 0,455 contra sus respectivas PI),
-#     obteniendo R2 = 0,25 con relación significativa. La extensión es directa y
-#     queda propuesta como continuación.
+#   - Con 137 observaciones y solo tres categorías, la regresión tiene poca
+#     variación en la variable explicativa. Es una restricción del universo, no
+#     del método: la banca mayorista tiene pocos deudores por definición. La
+#     extensión a las seis categorías de cartera normal (calibrando A1: 0,520;
+#     A2: 0,500; A3: 0,455 contra sus respectivas PI) es directa y queda
+#     propuesta como continuación.
+#   - Los resultados dependen de la semilla: otra semilla produce otra cartera
+#     simulada y, por lo tanto, otras cifras en la sección 6.
 #   - La normalización de la brecha es relativa al máximo de la cartera vigente,
 #     por lo que los puntajes no son comparables entre períodos distintos.
 #   - Los umbrales de la columna de justificación son criterio experto, no
