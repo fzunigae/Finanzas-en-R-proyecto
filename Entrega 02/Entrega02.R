@@ -70,8 +70,11 @@
 #     Prioridad = brecha de conducta (0 a 1) x provisión en riesgo (MM$)
 
 #   - Brecha de conducta: residuo de una regresión que explica el comportamiento
-#     de pago observado a partir de la categoría vigente. Un residuo positivo
-#     indica que el deudor se comporta peor que sus pares de igual clasificación.
+#     de pago observado a partir de la categoría vigente, ingresada como
+#     variable categórica (factor). Así el valor esperado de cada deudor es el
+#     promedio de conducta de su categoría, sin suponer que los saltos entre
+#     A4, A5 y A6 son iguales. Un residuo positivo indica que el deudor se
+#     comporta peor que el promedio de sus pares de igual clasificación.
 #     Los residuos negativos se truncan en cero: comportarse mejor que lo esperado
 #     no es motivo de revisión.
 
@@ -129,13 +132,22 @@
 #   - 8 deudores A4/A5 con EEFF desactualizados (5.040 MM$ de exposición):
 #     incumplen el techo normativo A6 por control administrativo, sin necesidad
 #     de análisis de riesgo
-#   - Regresión conducta ~ categoría: R2 = 0,102 (p < 0,001). La relación es
-#     significativa y va en el sentido esperado (peor categoría, peor conducta),
-#     pero la categoría vigente explica apenas el 10,2% de la variación en
-#     comportamiento de pago; el 89,8% restante ocurre DENTRO de las categorías.
-#     Este resultado no es una debilidad del modelo: es su justificación. Si la
-#     clasificación explicara la conducta, bastaría con revisar en orden de
-#     categoría.
+#   - Regresión conducta ~ categoría (factor): R2 = 0,142 (p < 0,001). La
+#     relación es significativa, pero la categoría vigente explica apenas el
+#     14,2% de la variación en comportamiento de pago; el 85,8% restante
+#     ocurre DENTRO de las categorías. Este resultado no es una debilidad del
+#     modelo: es su justificación. Si la clasificación explicara la conducta,
+#     bastaría con revisar en orden de categoría.
+#   - Mejora respecto de la versión 1 (categoría como número 4/5/6, R2 = 0,102):
+#     el test F entre ambos modelos anidados rechaza el supuesto de saltos
+#     iguales entre categorías (p = 0,014). En esta cartera los A5 muestran en
+#     promedio mejor conducta que los A4, algo que una recta no puede
+#     representar: en la versión 1 el residuo promedio era +0,76 en A4 y
+#     -0,36 en A5 (en vez de 0), es decir, los A4 parecían peores que sus
+#     pares y los A5 mejores, solo por la forma del modelo. El efecto
+#     práctico es acotado: 9 de los 10 primeros de la fila de espera se
+#     mantienen; sale CLI_004 (A4) y entra CLI_070 (A5), en la dirección
+#     predicha. El deudor prioritario (CLI_081) no cambia.
 #   - Comparación contra el criterio actual: de los 5 deudores con mayor provisión
 #     en riesgo (criterio de tamaño), 3 presentan brecha de conducta nula. Bajo el
 #     criterio vigente serían de las primeras carpetas abiertas sin que exista
@@ -171,6 +183,10 @@
 #     extensión a las seis categorías de cartera normal (calibrando A1: 0,520;
 #     A2: 0,500; A3: 0,455 contra sus respectivas PI) es directa y queda
 #     propuesta como continuación.
+#   - Con solo 11 deudores A4, el promedio de conducta que sirve de referencia
+#     para esa categoría se estima con poca precisión. La inversión observada
+#     entre A4 y A5 es atribuible a ese ruido muestral: en el generador las
+#     probabilidades de pago son monótonas por categoría.
 #   - Los resultados dependen de la semilla: otra semilla produce otra cartera
 #     simulada y, por lo tanto, otras cifras en la sección 6.
 #   - La normalización de la brecha es relativa al máximo de la cartera vigente,
@@ -494,14 +510,39 @@ print(round(cor(datos[vars]), 3))
 datos$Conducta <- as.numeric(scale(datos$Severidad)) + as.numeric(scale(datos$Cronicidad))
 
 # --- 4.3 Regresión por mínimos cuadrados ordinarios ---
-modelo <- lm(Conducta ~ Categoria_num, data = datos)
+# La categoría entra como FACTOR y no como número (4, 5, 6). Como número,
+# el modelo ajusta una sola pendiente y supone que el salto de conducta
+# A4 -> A5 es igual al de A5 -> A6, sin haberlo verificado. Como factor,
+# R crea una dummy por categoría (A4 queda como base) y cada una tiene su
+# propio nivel: el valor ajustado pasa a ser el promedio de sus pares.
+# Equivale en Python a smf.ols("Conducta ~ C(Categoria)", data=datos).
+modelo <- lm(Conducta ~ factor(Categoria), data = datos)
 print(summary(modelo))
 
-# --- 4.4 Residuos ---
-# Valor ajustado = conducta esperable para esa categoría.
-# Residuo = cuánto se aparta el deudor de lo esperable para sus pares.
+# --- 4.4 Comparación contra la versión lineal (v1) ---
+# El modelo lineal es un caso particular del factorial: el factorial
+# nunca ajusta peor. anova() con dos modelos anidados hace un test F de
+# si la restricción de "saltos iguales" es aceptable. Un p-valor alto
+# indica que imponerla no cuesta ajuste; uno bajo, que la v1 distorsionaba
+# los residuos.
+modelo_lineal <- lm(Conducta ~ Categoria_num, data = datos)
+cat("R2 lineal: ", round(summary(modelo_lineal)$r.squared, 3), "\n")
+cat("R2 factor: ", round(summary(modelo)$r.squared, 3), "\n")
+print(anova(modelo_lineal, modelo))
+
+# --- 4.5 Residuos ---
+# Valor ajustado = conducta promedio de la categoría del deudor.
+# Residuo = cuánto se aparta el deudor del promedio de sus pares.
 datos$Conducta_esperada <- fitted(modelo)
 datos$Residuo <- resid(modelo)
+
+# Verificación: con solo dummies de categoría, MCO ajusta a cada grupo su
+# media, porque la media es el valor que minimiza la suma de cuadrados.
+# Si eso no se cumple, algo está mal en la especificación y se detiene.
+promedios <- aggregate(cbind(Conducta, Conducta_esperada) ~ Categoria,
+                       data = datos, FUN = mean)
+print(promedios)
+stopifnot(isTRUE(all.equal(promedios$Conducta, promedios$Conducta_esperada)))
 
 #%% CELDA 9 - PARTE 5: ÍNDICE DE PRIORIDAD Y FILA DE ESPERA
 # =============================================================================
@@ -563,6 +604,17 @@ control_eeff <- datos[datos$Categoria %in% c("A4", "A5") & !datos$EEFF_vigentes,
 
 # --- Fila de espera ---
 fila_espera <- datos[order(datos$Prioridad, decreasing = TRUE), columnas_salida]
+
+# --- Efecto del cambio sobre la fila de espera ---
+# Se reconstruye la prioridad de la v1 con los residuos del modelo lineal
+# para medir cuánto cambia el orden.
+brecha_v1 <- pmax(resid(modelo_lineal), 0)
+prioridad_v1 <- brecha_v1 / max(brecha_v1) * datos$Provision_riesgo
+top10_v1 <- rownames(datos)[order(prioridad_v1, decreasing = TRUE)][1:10]
+top10_v2 <- rownames(fila_espera)[1:10]
+cat("Coinciden en el top-10:", length(intersect(top10_v1, top10_v2)), "de 10\n")
+cat("Salen:  ", setdiff(top10_v1, top10_v2), "\n")
+cat("Entran: ", setdiff(top10_v2, top10_v1), "\n")
 
 #%% CELDA 10 - VISUALIZACIONES
 # ---------- Gráfico 1: trayectoria del deudor prioritario ----------
