@@ -146,8 +146,9 @@
 #     -0,36 en A5 (en vez de 0), es decir, los A4 parecían peores que sus
 #     pares y los A5 mejores, solo por la forma del modelo. El efecto
 #     práctico es acotado: 9 de los 10 primeros de la fila de espera se
-#     mantienen; sale CLI_004 (A4) y entra CLI_070 (A5), en la dirección
-#     predicha. El deudor prioritario (CLI_081) no cambia.
+#     mantienen; sale CLI_004 (A4), coherente con que la versión 1 inflaba
+#     el residuo de los A4, y entra CLI_070 (A6). El deudor prioritario
+#     (CLI_081) no cambia.
 #   - Comparación contra el criterio actual: de los 5 deudores con mayor provisión
 #     en riesgo (criterio de tamaño), 3 presentan brecha de conducta nula. Bajo el
 #     criterio vigente serían de las primeras carpetas abiertas sin que exista
