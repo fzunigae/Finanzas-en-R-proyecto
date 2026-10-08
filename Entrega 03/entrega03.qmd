@@ -1,0 +1,394 @@
+---
+title: "Finanzas en R -- Entrega 03"
+subtitle: "Documentación, versionado, despliegue y monitoreo del modelo"
+author: "Felipe Zúñiga"
+date: "2026-10-07"
+format:
+  typst:
+    toc: true
+    section-numbering: "1."
+    # Typst corta palabras con guion al justificar (mode-lo, mo-delo);
+    # se desactiva para todo el documento, incluido el subtítulo. Sin cortes,
+    # las celdas angostas de las tablas quedan con espacios muy anchos al
+    # justificar, así que dentro de las tablas el texto se alinea a la izquierda.
+    include-in-header:
+      text: |
+        #set text(hyphenate: false)
+        #show table: set par(justify: false)
+lang: es
+execute:
+  echo: false
+---
+
+## Contexto
+
+Esta entrega cierra el ciclo de trabajo del proyecto
+(*collect → clean → train → version → deploy → monitor*). La Entrega 01 definió
+el problema y la planificación; la Entrega 02 construyó el producto mínimo
+viable (`Entrega 02/Entrega02.R`). Aquí se documenta el modelo mediante una
+*model card* al estilo de Vetiver, complementada con los apartados de limpieza y
+transformación de datos, y se describe cómo se versiona, cómo se llevaría a
+producción y cómo se monitorearía.
+
+Todas las cifras de este documento provienen de una ejecución de
+`Entrega02.R` (versión `v2`, semilla 42) realizada el 07/10/2026.
+
+## Diagrama del flujo
+
+```{r}
+#| label: diagrama-flujo
+#| fig-cap: "Flujo del modelo, desde el informe semanal hasta la revisión del analista"
+#| fig-width: 9
+#| fig-height: 4.6
+
+library(ggplot2)
+
+# Cada caja es una etapa del ciclo; x e y ubican su centro en el lienzo.
+# Las dos filas se leen de izquierda a derecha: la superior es el
+# tratamiento de datos y la inferior el modelo y su uso.
+cajas <- data.frame(
+  etapa = c(
+    "Informe semanal\nde mora (lunes)", "Serie histórica\n52 semanas",
+    "Cierres mensuales\nO / I / V", "Cartera base\n(exposición, EEFF)",
+    "Severidad y\ncronicidad", "Regresión\nconducta ~ categoría",
+    "Brecha x provisión\nen riesgo", "Fila de espera\n(Excel)",
+    "Revisión del\nanalista"
+  ),
+  fase = c(
+    "Collect", "Clean", "Clean", "Collect",
+    "Clean", "Train", "Train", "Deploy", "Monitor"
+  ),
+  x = c(1, 2.6, 4.2, 5.8, 7.4, 1, 2.6, 4.2, 5.8),
+  y = c(2, 2, 2, 2, 2, 1, 1, 1, 1)
+)
+
+# Las flechas unen el centro de una caja con el de la siguiente,
+# descontando medio ancho de caja para que no se monten sobre el texto.
+flechas <- data.frame(
+  x    = c(1, 2.6, 4.2, 5.8) + 0.62,
+  xend = c(2.6, 4.2, 5.8, 7.4) - 0.62,
+  y    = 2, yend = 2
+)
+flechas <- rbind(
+  flechas,
+  data.frame(x = 1 + 0.62, xend = 2.6 - 0.62, y = 1, yend = 1),
+  data.frame(x = 2.6 + 0.62, xend = 4.2 - 0.62, y = 1, yend = 1),
+  data.frame(x = 4.2 + 0.62, xend = 5.8 - 0.62, y = 1, yend = 1),
+  # De los indicadores (fila superior) al modelo (fila inferior)
+  data.frame(x = 7.4, xend = 1.3, y = 2 - 0.3, yend = 1 + 0.3)
+)
+
+colores_fase <- c(Collect = "#BBDEFB", Clean = "#C8E6C9", Train = "#FFE0B2",
+                  Deploy = "#E1BEE7", Monitor = "#FFCDD2")
+
+ggplot() +
+  geom_segment(data = flechas, aes(x = x, xend = xend, y = y, yend = yend),
+               arrow = arrow(length = unit(0.18, "cm")), color = "grey40") +
+  geom_tile(data = cajas, aes(x = x, y = y, fill = fase),
+            width = 1.24, height = 0.55, color = "grey30") +
+  geom_text(data = cajas, aes(x = x, y = y, label = etapa), size = 3) +
+  scale_fill_manual(values = colores_fase,
+                    breaks = names(colores_fase)) +
+  coord_cartesian(xlim = c(0.3, 8.1), ylim = c(0.6, 2.4)) +
+  labs(fill = "Fase del ciclo") +
+  theme_void() +
+  theme(legend.position = "bottom")
+```
+
+El paso de la fila superior a la inferior marca la frontera entre datos y
+modelo. La última caja ("Revisión del analista") es deliberadamente humana: el
+modelo ordena, no reclasifica, y lo que el analista decide en esa etapa es el
+insumo principal del monitoreo (sección 6).
+
+## Model card
+
+### Detalles del modelo
+
+| Campo | Valor |
+|---|---|
+| Nombre | Modelo de focalización de revisión, cartera comercial mayorista A4–A6 |
+| Versión vigente | `v2` (categoría como factor) |
+| Autor | Felipe Zúñiga |
+| Fecha | Octubre 2026 |
+| Tipo | Descriptivo. Regresión lineal por MCO (`lm()`) más una regla de priorización. No es un modelo predictivo |
+| Código | `Entrega 02/Entrega02.R` |
+| Dependencias | R 4.6.1; `ggplot2` y `writexl`, con versiones fijadas en `renv.lock` |
+| Salida | Fila de espera de 137 deudores ordenada por índice de prioridad, con justificación por deudor |
+
+**Lógica:**
+
+> Prioridad = brecha de conducta (0 a 1) × provisión en riesgo (MM\$)
+
+- **Conducta**: suma de severidad y cronicidad estandarizadas.
+- **Brecha de conducta**: residuo positivo de la regresión
+  `Conducta ~ factor(Categoria)`, normalizado por el máximo de la cartera.
+  Mide cuánto peor se comporta un deudor que el promedio de sus pares de igual
+  categoría.
+- **Provisión en riesgo**: provisión adicional ante una migración de un
+  escalón, según la tabla de pérdida esperada del Capítulo B-1 (PE = PI × PDI).
+
+### Uso previsto
+
+- **Usuarios**: analistas de riesgo de crédito comercial y sus jefaturas.
+- **Uso**: decidir el orden en que se revisan los deudores A4–A6 cada semana.
+- **Fuera de alcance**: el modelo **no** reclasifica, no estima probabilidad de
+  migración y no debe usarse para calcular provisiones. El índice de prioridad
+  ordena, no cuantifica.
+- **Universo**: solo cartera evaluada individualmente en categorías A4, A5 y
+  A6. No aplica a A1–A3 ni a cartera subestándar o en incumplimiento.
+
+### Datos
+
+**Todos los datos son sintéticos.** Se generan por simulación con semilla fija
+(`set.seed(42)`). No se utiliza información real de clientes. El generador fue
+calibrado para que la frecuencia de deudores que alcanzan 90 días de mora se
+aproxime a las PI normativas del Capítulo B-1 (A4: 2,00 %; A5: 4,75 %;
+A6: 10,00 %). Las PI observadas en la simulación son 2,53 %, 5,80 % y 12,57 %.
+El sesgo al alza es de alrededor del 25 % en las tres categorías, así que se
+mantiene el orden relativo entre ellas.
+
+| Fuente simulada | Granularidad | Dimensión |
+|---|---|---|
+| Informe semanal de mora | Deudor × semana | 52 cortes × 137 deudores (7.124 obs.) |
+| Estado de cierre mensual | Deudor × mes | 12 cierres × 137 deudores |
+| Cartera base | Deudor | 137 deudores: 11 A4, 46 A5, 80 A6 |
+
+Exposición total: 138.531 MM\$. Provisión constituida: 9.722 MM\$.
+Provisión en riesgo: 6.489 MM\$.
+
+### Limpieza y transformación de datos
+
+Como los datos son simulados, no hay limpieza de errores de captura. El
+trabajo de esta etapa consiste en **transformar** tres fuentes con distinta
+granularidad en una sola tabla de un registro por deudor, y en **validar** que
+las uniones sean consistentes.
+
+1. **Reconstrucción de la serie semanal** (celda 3). Hoy el informe de mora
+   llega cada lunes y no se guarda, así que la trayectoria se pierde. El
+   programa construye la serie de 52 semanas con un contador de días que sube
+   +7 entre viernes si no hubo pago y vuelve a 0 al regularizar.
+2. **Derivación de cierres mensuales** (celda 4). Los estados O (operativo),
+   I (impago) y V (vencido, ≥ 90 días) se **derivan** de la serie semanal en
+   lugar de generarse por separado. Así se evitan contradicciones entre
+   fuentes, como un cierre "O" en un mes con 30 días de mora.
+3. **Recodificación de estados a números** (celda 6). Las letras no se pueden
+   sumar: O = 0, I = 1, V = 3 (criterio experto: un vencido pesa como tres
+   impagos).
+4. **Ponderación temporal** (celda 6). Los 12 meses se ponderan linealmente
+   entre 0,5 (el más antiguo) y 1,5 (el más reciente). El peso promedio es 1,
+   así que la ponderación no cambia la escala.
+5. **Agregación a nivel deudor** (celda 6). La *severidad* es la mora del
+   último corte y la *cronicidad* es la suma ponderada de los cierres.
+6. **Estandarización** (celda 8). Severidad (hasta 102) y cronicidad (hasta
+   17,7) tienen escalas distintas. Se estandarizan con `scale()` antes de
+   sumarlas en el índice de conducta.
+7. **Unión de tablas con validación** (celda 8). La cartera base y los
+   indicadores se unen por código de deudor. Antes de unirlas,
+   `stopifnot(identical(rownames(...)))` verifica que ambas tengan los mismos
+   deudores en el mismo orden. Si no se cumple, la ejecución se detiene.
+8. **Truncamiento y normalización** (celda 9). Los residuos negativos se
+   truncan en 0, porque comportarse mejor que los pares no es motivo de
+   revisión. Luego la brecha se divide por su máximo.
+9. **Regla separada de EEFF** (celda 9). Los deudores A4/A5 con estados
+   financieros vencidos se reportan en una hoja aparte ("Control EEFF"). Es
+   un control normativo, no un término más del puntaje.
+
+### Métricas
+
+| Métrica | Valor | Lectura |
+|---|---|---|
+| R² de la regresión (v2) | 0,142 (p < 0,001) | La categoría explica solo el 14 % de la conducta. El 86 % restante ocurre dentro de cada categoría, y eso es lo que justifica el modelo |
+| R² de la versión anterior (v1) | 0,102 | Categoría como número 4/5/6 |
+| Test F v1 vs. v2 | p = 0,014 | Se rechaza el supuesto de saltos iguales entre categorías |
+| Validación de residuos | Media 0 por categoría | Se verifica con `stopifnot()` en cada ejecución |
+| Estabilidad del top 10 (v1 → v2) | 9 de 10 | Sale CLI_004 (A4) y entra CLI_070 (A6). El deudor prioritario (CLI_081) no cambia |
+| Deudores con brecha 0 | 82 de 137 | Se comportan igual o mejor que sus pares |
+| Concentración | 72 % | Parte del índice de prioridad total que reúnen los 10 primeros |
+| Contraste con el criterio de tamaño | 3 de 5 | De los 5 deudores con mayor provisión en riesgo, 3 tienen brecha nula |
+
+Como el modelo es descriptivo, no tiene métricas de poder predictivo
+(AUC, precisión). Su validez se juzga en producción, por la tasa de acierto de
+la revisión (sección 6).
+
+### Consideraciones éticas y regulatorias
+
+- **Decisión humana**: el modelo no reclasifica. Toda reclasificación sigue
+  siendo una decisión del analista, documentada según el Capítulo B-1.
+- **Explicabilidad**: cada deudor de la fila de espera lleva una columna de
+  justificación ("mora actual alta", "mora recurrente", "conducta peor que sus
+  pares", "EEFF desactualizados"). Un ordenamiento sin explicación no sería
+  auditable.
+- **Variables usadas**: solo conducta de pago, categoría normativa y
+  exposición. El sector económico se simula, pero **no** entra al puntaje, para
+  no penalizar a un deudor por su industria.
+- **Confidencialidad**: con datos reales, la fila de espera contiene
+  información sujeta a secreto bancario. El repositorio solo debe contener
+  código y datos sintéticos. Las salidas reales nunca se versionan en GitHub.
+
+### Advertencias y recomendaciones
+
+- **Deudores que superan 90 días**: la simulación permite que un deudor cruce
+  90 días de mora y siga en A4–A6. Esto ocurre en 9 deudores durante el año, y
+  4 de ellos están en el top 10 (CLI_023 alcanza 177 días, CLI_092 159,
+  CLI_081 123 y CLI_097 99). En la realidad, un deudor así pasaría a cartera
+  en incumplimiento y saldría del universo, y el analista lo habría revisado
+  mucho antes. Cruzar 90 días es intencional, porque la calibración de la PI
+  lo cuenta. El problema es que falta un estado absorbente que lo saque del
+  universo. En producción, el filtro de universo debe excluirlos (sección 5).
+- **Muestra pequeña en A4**: con 11 deudores A4, su promedio de referencia es
+  impreciso. La inversión observada entre A4 y A5 es ruido muestral.
+- **Normalización relativa**: la brecha se normaliza contra el máximo de la
+  semana, así que **los puntajes no son comparables entre semanas, pero los
+  rankings sí**. El monitoreo se basa en rankings.
+- **Garantías**: no se consideran. La provisión en riesgo de deudores con
+  cobertura real queda sobreestimada.
+- **Dependencia de la semilla**: otra semilla produce otra cartera y otras
+  cifras.
+- **Extensión propuesta**: llevar el modelo a A1–A3 con la calibración ya
+  disponible (A1: 0,520; A2: 0,500; A3: 0,455) aumentaría la variación de la
+  variable explicativa.
+
+## Versionado
+
+El proyecto se versiona en tres capas:
+
+1. **Código, con git y GitHub.** Cada cambio queda en un commit con un mensaje
+   descriptivo. El repositorio es
+   `github.com/fzunigae/Finanzas-en-R-proyecto`.
+2. **Modelo, con tags de git.** Cada versión del modelo que cambia los
+   resultados recibe un tag, de modo que cualquier versión puede recuperarse y
+   compararse (`git diff v1-port v2`).
+3. **Entorno, con renv.** `renv.lock` fija la versión exacta de R y de cada
+   paquete. `renv::restore()` reconstruye el mismo entorno en otro computador.
+   Junto con la semilla fija, esto garantiza que el mismo código produce las
+   mismas cifras.
+
+| Tag | Cambio | Efecto |
+|---|---|---|
+| `v1-port` | Port fiel a R del MVP original. Categoría como número (4, 5, 6) | R² = 0,102 |
+| `v2` | Categoría como factor: cada categoría tiene su propio nivel esperado | R² = 0,142; test F p = 0,014; 9 de 10 en el top se mantienen |
+| `v3` | Entrega 03: documentación, despliegue y monitoreo. Sin cambios en el modelo | Cifras idénticas a `v2` |
+
+**Criterio para crear una nueva versión del modelo.** Se crea un tag nuevo
+cuando cambia la especificación de la regresión, la definición de los
+indicadores, los parámetros de la celda 2 o los datos de calibración. Un
+cambio solo de documentación no requiere nueva versión del modelo. Cada nueva
+versión se compara contra la anterior con el mismo protocolo usado entre `v1`
+y `v2`: R², test F entre modelos anidados y estabilidad del top 10.
+
+## Despliegue
+
+El MVP corre de punta a punta con datos simulados. Para llevarlo a producción
+se proponen tres pasos:
+
+**1. Sustituir la simulación por la ingesta real.** Las celdas 3 a 5 se
+reemplazan por la lectura del informe semanal de mora y de la cartera base.
+El cambio más importante es **guardar cada informe semanal** en una tabla
+histórica (una base de datos o, como mínimo, un archivo acumulado). Hoy esa
+información se pierde, y sin ella no se puede construir la trayectoria. El
+resto del código (celdas 6 a 11) no cambia, porque ya recibe tablas con la
+misma estructura.
+
+**2. Agregar validaciones de entrada.** Antes de calcular, la ejecución debe
+detenerse si falla alguna de estas condiciones:
+
+- todos los deudores del universo tienen informe de la semana;
+- no hay valores faltantes en mora, exposición ni categoría;
+- las categorías pertenecen a {A4, A5, A6};
+- **los deudores con 90 o más días de mora se excluyen del universo**, porque
+  pasan a cartera en incumplimiento (corrige la limitación de la sección 3).
+
+**3. Ejecución programada.** El informe llega los lunes, así que el proceso
+corre cada lunes después de su recepción:
+
+| Opción | Cómo | Cuándo conviene |
+|---|---|---|
+| Programador de tareas | `Rscript Entrega02.R` desde el Programador de tareas de Windows (o `cron` en Linux) en un servidor del área | Primera puesta en producción, con mínima infraestructura |
+| Posit Connect | Publicar el script o un reporte Quarto con ejecución programada | Si el banco ya dispone de la plataforma |
+| GitHub Actions | Flujo programado que restaura renv y ejecuta el script | Solo con datos sintéticos: los datos reales no deben salir de la infraestructura del banco |
+
+**Entrega del resultado.** El Excel `resultado_focalizacion.xlsx` se deja en
+una carpeta compartida del área de riesgo, que es el formato que los analistas
+ya usan. Como evolución, la fila de espera y los gráficos se pueden presentar
+en una aplicación Shiny, donde el analista filtre por sector o categoría y vea
+la trayectoria de cualquier deudor, no solo la del prioritario.
+
+**Vetiver como alternativa.** Si el modelo evoluciona a uno predictivo (por
+ejemplo, una probabilidad de migración), conviene empaquetarlo con
+`vetiver`. Ese paquete versiona el objeto del modelo con `pins` y lo expone
+como API con `plumber`. Para el modelo actual, que se reestima completo cada
+semana sobre la cartera vigente, el esquema de script programado es suficiente
+y más simple de auditar.
+
+## Monitoreo
+
+El monitoreo cubre cuatro frentes. Cada métrica tiene un umbral y una acción
+asociada.
+
+### Operatividad
+
+| Métrica | Umbral | Acción |
+|---|---|---|
+| El proceso corrió el lunes | Archivo de salida con fecha del día | Alerta por correo al responsable si no existe a las 12:00 |
+| Validaciones de entrada | Todas pasan | La ejecución se detiene y se informa qué validación falló |
+| Entorno reproducible | `renv::status()` sin diferencias | Revisar cambios de paquetes antes de ejecutar |
+
+### Calidad de los datos
+
+| Métrica | Umbral | Acción |
+|---|---|---|
+| Deudores en el informe vs. universo | 100 % | Investigar los faltantes antes de publicar la fila |
+| Composición por categoría | Variación semanal razonable | Confirmar con la cartera si hubo reclasificaciones masivas |
+| Mora coherente con la semana anterior | Sube 7 días, vuelve a 0 o parte entre 1 y 7 | Otro salto indica un error en la fuente |
+
+### Desempeño del modelo
+
+Como los puntajes no son comparables entre semanas (sección 3), se monitorean
+**rankings y parámetros**, no niveles del índice:
+
+| Métrica | Referencia actual | Señal de alerta |
+|---|---|---|
+| Estabilidad del top 10 semana a semana | — (se establece con las primeras semanas reales) | Coincidencia menor a 5 de 10 de forma sostenida |
+| R² de la regresión | 0,142 | Fuera del rango 0,05–0,30 |
+| Diferencias entre categorías (test F) | Significativas | Si dejan de serlo, la categoría vigente no ordena la conducta |
+| Proporción de deudores con brecha 0 | 82 / 137 (60 %) | Cambio mayor a 15 puntos porcentuales |
+
+### Valor para el negocio
+
+Estas son las métricas que importan, porque miden si ordenar la revisión con
+el modelo mejora la gestión del riesgo:
+
+- **Tasa de acierto**: de los deudores revisados del top 10, qué proporción
+  terminó reclasificada o con una acción de seguimiento. Se registra con una
+  columna "resultado de la revisión" que el analista completa en el Excel.
+- **Migraciones anticipadas**: de los deudores que migraron de categoría en el
+  trimestre, cuántos estaban en el top 20 de la fila de espera en las semanas
+  previas. Si el modelo funciona, deberían concentrarse arriba.
+- **Comparación con el criterio de tamaño**: las mismas métricas, calculadas
+  como si la revisión se hubiera ordenado solo por provisión en riesgo.
+
+### Plan de revisión
+
+| Frecuencia | Qué se revisa | Responsable |
+|---|---|---|
+| Semanal | Operatividad, calidad de datos y estabilidad del top 10 | Analista a cargo del proceso |
+| Mensual | R², test F, distribución de la brecha y tasa de acierto | Jefatura de riesgo comercial |
+| Anual | Recalibración del generador contra las PI vigentes, revisión de umbrales y pesos de criterio experto, y evaluación de la extensión a A1–A3 | Riesgo comercial y validación de modelos |
+
+Una recalibración o cambio de parámetros genera una nueva versión del modelo,
+siguiendo el criterio de la sección 4.
+
+## Reproducir el proyecto
+
+```
+git clone https://github.com/fzunigae/Finanzas-en-R-proyecto.git
+```
+
+Con la raíz del repositorio como directorio de trabajo:
+
+```r
+renv::restore()
+source("Entrega 02/Entrega02.R", encoding = "UTF-8")
+```
+
+Para regenerar este documento: `quarto render "Entrega 03/entrega03.qmd"`.
