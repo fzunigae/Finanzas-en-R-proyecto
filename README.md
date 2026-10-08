@@ -19,6 +19,14 @@ Universidad de Chile · Profesor: Sebastián Egaña
 | [`Entrega 02/`](Entrega%2002/) | MVP: código del modelo y salidas (Excel y gráficos) | `Entrega02.R` (ver su [README](Entrega%2002/README.md)) |
 | [`Entrega 03/`](Entrega%2003/) | Model card, limpieza y transformación de datos, diagrama del flujo, versionado, despliegue y monitoreo | `entrega03.qmd` → `entrega03.pdf` |
 
+## Uso de IA
+
+Durante el desarrollo se utilizó Claude (Anthropic), mediante Claude Code, como
+asistente de IA para el port del código a R, revisión de código, redacción y
+revisión de la documentación, y apoyo con git y renv. El diseño del modelo, las
+decisiones de criterio experto y la revisión final de código y resultados son
+del autor.
+
 ## Reproducir
 
 Requiere R 4.6.1. Las dependencias se gestionan con

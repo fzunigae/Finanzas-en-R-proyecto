@@ -378,6 +378,14 @@ el modelo mejora la gestión del riesgo:
 Una recalibración o cambio de parámetros genera una nueva versión del modelo,
 siguiendo el criterio de la sección 4.
 
+## Uso de IA
+
+Durante el desarrollo se utilizó Claude (Anthropic), mediante Claude Code, como
+asistente de IA para el port del código a R, revisión de código, redacción y
+revisión de la documentación, y apoyo con git y renv. El diseño del modelo, las
+decisiones de criterio experto y la revisión final de código y resultados son
+del autor.
+
 ## Reproducir el proyecto
 
 ```
